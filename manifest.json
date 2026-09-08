@@ -1,0 +1,27 @@
+{
+  "manifest_version": 3,
+  "name": "Kafka Eye",
+  "version": "1.3.1",
+  "description": "Real-time Kafka monitoring for Kafka UI - uses official API",
+  "permissions": ["storage"],
+  "host_permissions": [
+    "https://*/*",
+    "http://*/*"
+  ],
+  "action": {
+    "default_title": "👁️ Kafka Eye - Real-time Kafka Metrics"
+  },
+  "content_scripts": [
+    {
+      "matches": ["*://*/ui/clusters/*"],
+      "js": ["content.js"],
+      "all_frames": false
+    }
+  ],
+  "icons": {
+    "16": "icon16.png",
+    "48": "icon48.png",
+    "128": "icon128.png"
+  }
+}
+
