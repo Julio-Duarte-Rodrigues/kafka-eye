@@ -2,6 +2,14 @@
 
 **Real-time Kafka monitoring for Kafka UI (Kafbat)**
 
+<p align="center">
+  <img src="docs/screenshot.png" alt="Kafka Eye sidebar showing topics sorted by consumer lag, with an expanded topic listing its consumer groups" width="380">
+</p>
+
+*The sidebar in lag-sort mode (⏳): topics ordered by outstanding consumer lag,
+with the top topic expanded to show its consumer groups, health badges and
+per-group lag. Topic and consumer names are illustrative.*
+
 ## How it works
 
 1. **Automatically detects cluster** from your Kafka UI URL
