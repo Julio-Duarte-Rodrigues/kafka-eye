@@ -34,7 +34,7 @@ partitions — the API exposes no direct total.
 | `HTTP 403` | Authentication or permissions |
 | `Consumers for X failed: signal timed out` | Slow consumer-groups endpoint; Kafka Eye backs off and retries |
 | `Topics fetch failed: TypeError: Failed to fetch` | Usually transient network/CORS; cached topics are reused |
-| `Extension context invalidated` | The extension was reloaded while the page stayed open — refresh the page |
+| `Extension context invalidated` | Harmless — logged by the old content script when the extension reloads. The service worker re-injects automatically; click the banner if it doesn't |
 
 ## Behaviour worth knowing
 

@@ -1,5 +1,5 @@
 // Kafka Eye - Uses Kafka UI API
-// Version 1.4.1 - Resilient consumer scan: shorter scan timeout, retry badge, quieter logs
+// Version 1.5.0 - Auto-recover after extension reload via service worker
 
 const SELECTED_TOPICS_KEY_PREFIX = 'selectedTopics_';
 const SELECTED_CONSUMERS_KEY_PREFIX = 'selectedConsumers_';
@@ -90,10 +90,19 @@ window.addEventListener('unhandledrejection', (evt) => {
 
 document.addEventListener('DOMContentLoaded', initKafkaEye);
 window.addEventListener('load', initKafkaEye);
+// When the service worker re-injects after an extension reload, both events
+// above have long since fired — so start immediately if the document is ready.
+if (document.readyState === 'interactive' || document.readyState === 'complete') {
+  initKafkaEye();
+}
 
 function initKafkaEye() {
   if (initStarted) return;
   initStarted = true;
+
+  // Liveness flag probed by the service worker before re-injecting after an
+  // extension reload — see background.js.
+  try { window.__kafkaEyeAlive = true; } catch (e) { /* ignore */ }
 
   // A sidebar from a previous (now-invalidated) context may still be in the DOM
   const orphan = document.querySelector('#kafbatml-sidebar-metrics');
@@ -311,8 +320,9 @@ function createSidebar() {
         margin-top: 8px; padding: 6px 8px;
         background: #422006; color: #fbbf24;
         border: 1px solid #78350f; border-radius: 4px;
-        font-size: 11px; text-align: center;
+        font-size: 11px; text-align: center; cursor: pointer;
       }
+      .stale-banner:hover { background: #572d08; }
 
       .no-data { color: #666; text-align: center; padding: 12px; font-size: 12px; }
       .error { color: #ff6b6b; text-align: center; padding: 12px; font-size: 12px; }
@@ -1344,6 +1354,9 @@ function isContextError(e) {
 function handleInvalidatedContext() {
   if (contextInvalidated) return;
   contextInvalidated = true;
+  // Clear the liveness flag so the service worker knows this world is dead and
+  // re-injects a fresh script instead of assuming one is already running.
+  try { window.__kafkaEyeAlive = false; } catch (e) { /* ignore */ }
   console.warn('[Kafka Eye] Extension context invalidated — shutting down. Reload the page to resume.');
 
   if (pollingInterval) { clearInterval(pollingInterval); pollingInterval = null; }
@@ -1357,7 +1370,9 @@ function handleInvalidatedContext() {
       const el = document.createElement('div');
       el.id = 'kafkaEyeStaleBanner';
       el.className = 'stale-banner';
-      el.textContent = '⚠ Extension reloaded — refresh this page';
+      el.title = 'Click to reload the page and reconnect';
+      el.textContent = '⚠ Extension reloaded — click to refresh';
+      el.addEventListener('click', () => window.location.reload());
       header.appendChild(el);
     }
   }

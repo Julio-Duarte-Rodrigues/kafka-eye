@@ -15,9 +15,13 @@ The 👁️ Kafka Eye sidebar appears on the right.
 
 ## Updating after a code change
 
-Click the reload icon on the Kafka Eye card in the extensions page, **then**
-refresh the Kafka UI tab. Reloading only one of the two is the usual reason a
-change appears not to take effect.
+Click the reload icon on the Kafka Eye card in the extensions page. That's it —
+a background service worker re-injects Kafka Eye into any open Kafka UI tab, so
+the sidebar comes back on its own without a page refresh.
+
+If a tab can't be reached (it was discarded, or was mid-navigation), the
+sidebar shows a clickable **"⚠ Extension reloaded — click to refresh"** banner
+as a fallback.
 
 ## Usage
 
@@ -45,7 +49,9 @@ refresh (⌘⇧R / Ctrl+⇧R). Check the console (F12) for `[Kafka Eye]` lines.
 slow on large clusters. Kafka Eye serialises these requests and backs off
 automatically; the row offers a **Retry** button.
 
-**"Extension context invalidated"** — expected after reloading the extension
-while a page is still open. Refresh the page; a banner prompts you.
+**"Extension context invalidated"** — harmless. It's logged by the *old* content
+script when the extension reloads out from under it. The service worker then
+re-injects a fresh one automatically. Only if that fails do you need to click
+the banner to refresh.
 
 See `DEBUG.md` for more.

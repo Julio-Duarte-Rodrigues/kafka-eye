@@ -31,8 +31,8 @@ git clone https://github.com/Julio-Duarte-Rodrigues/kafka-eye.git
 4. Select the cloned folder (the one containing `manifest.json`)
 5. Refresh your Kafka UI page
 
-After changing the code, hit **Reload** on the extension card *and* refresh the
-page — doing only one is the usual reason a change seems not to apply.
+After changing the code, hit **Reload** on the extension card. Open Kafka UI
+tabs re-inject themselves automatically — no manual page refresh needed.
 
 See [INSTALL.md](INSTALL.md) for details.
 
@@ -94,7 +94,7 @@ Scanning is capped at the top 60 visible topics by message count.
 - ✅ Metrics scoped to the current selection
 - ✅ Search across topics and consumers (debounced)
 - ✅ Fast / standard polling modes
-- ✅ Survives extension reloads without console spam
+- ✅ Auto-recovers after an extension reload — no page refresh needed
 
 ## Number formatting
 
