@@ -1,5 +1,5 @@
 // Kafka Eye - Uses Kafka UI API
-// Version 1.4.0 - Filter out topics with no consumers; sort by consumer lag; tooltips
+// Version 1.4.1 - Resilient consumer scan: shorter scan timeout, retry badge, quieter logs
 
 const SELECTED_TOPICS_KEY_PREFIX = 'selectedTopics_';
 const SELECTED_CONSUMERS_KEY_PREFIX = 'selectedConsumers_';
@@ -45,6 +45,11 @@ const IDLE_POLLS_THRESHOLD = 3;
 
 // Consumer fetch resilience
 const CONSUMER_FETCH_TIMEOUT = 10000;
+// The background scan must not hold the single-request mutex for the full
+// user-facing timeout — a slow topic would otherwise block refreshes of the
+// topic the user actually has open. Speculative scans give up sooner and
+// simply retry later.
+const CONSUMER_SCAN_TIMEOUT = 4000;
 const CONSUMER_BACKOFF_BASE = 30000;   // 30s after first failure
 const CONSUMER_BACKOFF_MAX = 300000;   // cap at 5m
 let consumerFetchFailures = {};        // { topicName: { count, nextRetryAt, message } }
@@ -252,6 +257,10 @@ function createSidebar() {
       .topic-lag-pending {
         color: #a1a1aa; font-style: italic; opacity: 0.8;
       }
+      .topic-lag-retry {
+        color: #fbbf24; font-style: italic; opacity: 0.9;
+      }
+      .topic-row.selected .topic-lag-retry { color: #fef3c7; }
       .topic-row.selected .topic-lag-pending { color: #e0f2fe; }
 
       /* ── Consumer sub-rows ── */
@@ -599,7 +608,7 @@ async function fetchTopics() {
   }
 }
 
-async function fetchConsumersForTopic(topicName) {
+async function fetchConsumersForTopic(topicName, timeoutMs = CONSUMER_FETCH_TIMEOUT) {
   // Serialize consumer requests — concurrent hung requests starve the
   // browser's 6-connection-per-host pool and break the topics fetch.
   // Returns: array = success, null = failed, undefined = skipped (busy)
@@ -612,7 +621,7 @@ async function fetchConsumersForTopic(topicName) {
       method: 'GET',
       headers: { 'Accept': 'application/json' },
       mode: 'cors',
-      signal: AbortSignal.timeout(CONSUMER_FETCH_TIMEOUT)
+      signal: AbortSignal.timeout(timeoutMs)
     });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const data = await response.json();
@@ -630,13 +639,20 @@ async function fetchConsumersForTopic(topicName) {
     if (isContextError(e) || !isExtensionContextValid()) { handleInvalidatedContext(); return undefined; }
     const prev = consumerFetchFailures[topicName];
     const count = (prev?.count || 0) + 1;
+    const timedOut = e.name === 'TimeoutError';
     const delay = Math.min(CONSUMER_BACKOFF_BASE * Math.pow(2, count - 1), CONSUMER_BACKOFF_MAX);
     consumerFetchFailures[topicName] = {
       count,
       nextRetryAt: Date.now() + delay,
-      message: e.name === 'TimeoutError' ? 'timed out' : e.message
+      timedOut,
+      timeoutMs,
+      message: timedOut ? 'timed out' : e.message
     };
-    console.warn(`[Kafka Eye] Consumers for ${topicName} failed (${count}x, retry in ${Math.round(delay / 1000)}s):`, e.message);
+    // A slow consumer-groups endpoint is expected on some clusters and self-heals
+    // via backoff, so only the first failure is a warning; the rest are debug
+    // noise and would otherwise spam the console every backoff cycle.
+    const log = count === 1 ? console.warn : console.debug;
+    log(`[Kafka Eye] Consumers for ${topicName} failed (${count}x, retry in ${Math.round(delay / 1000)}s):`, e.message);
     return null; // null = failed (distinct from [] = genuinely no consumers)
   } finally {
     consumerFetchInFlight = false;
@@ -683,12 +699,14 @@ async function scanConsumersForVisibleTopics(visibleTopics) {
 
   loadingConsumers[topicName] = true;
   try {
-    const consumers = await fetchConsumersForTopic(topicName);
+    const consumers = await fetchConsumersForTopic(topicName, CONSUMER_SCAN_TIMEOUT);
     if (Array.isArray(consumers)) {
       topicConsumers[topicName] = consumers;
       recordConsumerLagHistory(consumers);
-      // New lag data can change sort order — re-render now rather than
-      // leaving the list a poll behind the data.
+    }
+    if (consumers !== undefined) {
+      // Re-render on failure too, so the row can swap "scanning…" for a
+      // "retrying" marker rather than implying the scan is still pending.
       lastRenderedTopicsJson = null;
       renderTopicsFromCache();
     }
@@ -864,6 +882,27 @@ function formatGrowthRate(growth, ratePerSecond) {
   return `<span ${span}>${arrow}${fmt(growth)}</span><span style="font-size: 11px; opacity: 0.75; display:block; margin-top:2px;">${rateStr}/s</span>`;
 }
 
+// Badge for a topic whose consumer groups aren't known yet. Distinguishes
+// "not reached yet" from "tried and failed", so a topic that keeps timing out
+// doesn't sit on `scanning…` forever looking like it's still in progress.
+function pendingConsumerBadge(topicName) {
+  const f = consumerFetchFailures[topicName];
+  if (f) {
+    const secs = Math.max(0, Math.round((f.nextRetryAt - Date.now()) / 1000));
+    const why = f.timedOut
+      ? `The consumer-groups endpoint took longer than ${Math.round((f.timeoutMs || CONSUMER_SCAN_TIMEOUT) / 1000)}s to respond.`
+      : `Request failed: ${f.message}.`;
+    const tip = `${why}\nFailed ${f.count}x — retrying in ${secs}s.\nThis is usually a slow broker, not a problem with the topic.`;
+    return `<span class="topic-lag-retry" title="${escapeAttr(tip)}">retrying ${secs}s</span>`;
+  }
+  const tip = 'Consumer groups not fetched yet.\nKafka UI only exposes consumer groups per topic, so Kafka Eye scans one topic per poll.';
+  return `<span class="topic-lag-pending" title="${escapeAttr(tip)}">scanning…</span>`;
+}
+
+function escapeAttr(s) {
+  return String(s).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+}
+
 function renderTopicsFromCache() {
   if (cachedTopics) renderTopics(cachedTopics);
 }
@@ -929,7 +968,8 @@ function renderTopics(topics) {
       m: t.messageCount,
       r: (ratePerSecond(topicHistory, t.name) ?? 0).toFixed(2),
       i: isTopicIdle(t.name),
-      l: topicKnownLag(t.name)
+      l: topicKnownLag(t.name),
+      f: consumerFetchFailures[t.name]?.count || 0
     })),
     selectedTopics,
     expandedTopics,
@@ -969,8 +1009,7 @@ function renderTopics(topics) {
     if (sortMode === 'lag') {
       const known = topicKnownLag(topic.name);
       if (known === null) {
-        const pendTip = 'Consumer lag not fetched yet.\nKafka UI only exposes consumer groups per topic, so Kafka Eye scans one topic per poll.';
-        lagHtml = ` <span class="topic-lag-pending" title="${pendTip}">scanning…</span>`;
+        lagHtml = ' ' + pendingConsumerBadge(topic.name);
       } else {
         const lagColor = known > 0 ? '#ef4444' : '#22c55e';
         const groupCount = (topicConsumers[topic.name] || []).length;
@@ -980,8 +1019,7 @@ function renderTopics(topics) {
         lagHtml = ` <span class="topic-lag" style="color:${lagColor};" title="${lagTip}">${fmtCompactCount(known)} lag</span>`;
       }
     } else if (hideNoConsumers && !Array.isArray(topicConsumers[topic.name])) {
-      const pendTip = 'Consumer groups not fetched yet, so this topic can\'t be filtered out yet.\nKafka UI only exposes consumer groups per topic, so Kafka Eye scans one topic per poll.';
-      lagHtml = ` <span class="topic-lag-pending" title="${pendTip}">scanning…</span>`;
+      lagHtml = ' ' + pendingConsumerBadge(topic.name);
     }
 
     const msgTip = `${fmt(topic.messageCount)} total messages in this topic\n(sum of offsetMax across all partitions).`;
