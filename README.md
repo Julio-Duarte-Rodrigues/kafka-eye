@@ -44,8 +44,24 @@ See [INSTALL.md](INSTALL.md) for details.
 | ⚡ | Fast mode (3s polling instead of 15s) |
 | 🙈 / 👁️ | Show non-empty topics only |
 | ◉ | Show selected topics only |
+| 👥 | **Hide topics with no consumers** |
 | ⇅ / ⏳ | **Sort by messages / sort by consumer lag** |
 | ✕ | Close |
+
+## Hiding topics with no consumers
+
+Click **👥** to drop topics that have **no consumer groups at all** from the
+list — useful for cutting a long topic list down to the ones something is
+actually reading. The choice is remembered between sessions.
+
+It uses the same background scan as lag sorting (one topic per poll), so a
+topic is only hidden once Kafka Eye has *confirmed* it has zero consumer
+groups. Topics not yet scanned show `scanning…` and stay visible until their
+result arrives — unknown is never treated as "no consumers", so nothing
+disappears just because it hasn't been checked yet.
+
+The filter composes with the others: search, non-empty and selected-only all
+still apply.
 
 ## Sorting by consumer lag
 

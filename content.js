@@ -1,5 +1,5 @@
 // Kafka Eye - Uses Kafka UI API
-// Version 1.3.1 - Sort by consumer lag; explanatory tooltips on all metrics
+// Version 1.4.0 - Filter out topics with no consumers; sort by consumer lag; tooltips
 
 const SELECTED_TOPICS_KEY_PREFIX = 'selectedTopics_';
 const SELECTED_CONSUMERS_KEY_PREFIX = 'selectedConsumers_';
@@ -7,6 +7,7 @@ const FAST_MODE_KEY = 'kafbatFastMode';
 const SHOW_NON_EMPTY_ONLY_KEY = 'kafkaEyeShowNonEmptyOnly';
 const SHOW_SELECTED_ONLY_KEY = 'kafkaEyeShowSelectedOnly';
 const SORT_MODE_KEY = 'kafkaEyeSortMode';
+const HIDE_NO_CONSUMERS_KEY = 'kafkaEyeHideNoConsumers';
 
 let sidebarShown = false;
 let currentClusterId = null;
@@ -23,13 +24,15 @@ let topicConsumers = {};      // { topicName: [ consumer, ... ] }
 let loadingConsumers = {};    // { topicName: true } — in-flight requests
 let sidebarMinimized = false;
 let sortMode = 'messages';    // 'messages' | 'lag'
+let hideNoConsumers = false;  // hide topics confirmed to have zero consumer groups
 
-// Background lag scan. Lag is only known for topics whose consumer groups have
+// Background consumer scan. Consumer groups are only known for topics that have
 // been fetched, and those are fetched on demand (one at a time, by design — see
-// the connection-starvation note on fetchConsumersForTopic). Sorting by lag is
-// therefore meaningless until data exists, so lag mode slowly backfills it:
-// ONE topic per poll, through the same mutex and backoff as every other
-// consumer request. Never fan out here — that reintroduces the fetch storm.
+// the connection-starvation note on fetchConsumersForTopic). Both lag sorting
+// and the "hide topics with no consumers" filter are meaningless until that
+// data exists, so either mode slowly backfills it: ONE topic per poll, through
+// the same mutex and backoff as every other consumer request. Never fan out
+// here — that reintroduces the fetch storm.
 const LAG_SCAN_MAX_TOPICS = 60; // don't crawl an unbounded topic list
 let lagScanCursor = 0;
 
@@ -314,6 +317,7 @@ function createSidebar() {
         <button class="icon-btn" id="fastModeBtn" title="Toggle fast mode">⚡</button>
         <button class="icon-btn" id="nonEmptyEyeBtn" title="Show non-empty only">🙈</button>
         <button class="icon-btn" id="selectedOnlyBtn" title="Show selected only">◉</button>
+        <button class="icon-btn" id="hasConsumersBtn" title="Show all topics (click to hide topics with no consumers)">👥</button>
         <button class="icon-btn" id="sortBtn" title="Sort by messages (click to sort by lag)">⇅</button>
         <button class="icon-btn" id="closeBtn" title="Close">✕</button>
       </div>
@@ -361,11 +365,12 @@ function createSidebar() {
   document.getElementById('expandBtn').addEventListener('click', toggleMinimize);
   document.getElementById('nonEmptyEyeBtn').addEventListener('click', toggleNonEmpty);
   document.getElementById('selectedOnlyBtn').addEventListener('click', toggleSelectedOnly);
+  document.getElementById('hasConsumersBtn').addEventListener('click', toggleHideNoConsumers);
   document.getElementById('sortBtn').addEventListener('click', toggleSortMode);
   document.getElementById('globalSearch').addEventListener('input', debounce(onSearch, 300));
   document.getElementById('clearSelectionsBtn').addEventListener('click', clearSelections);
 
-  safeStorageGet([FAST_MODE_KEY, SHOW_NON_EMPTY_ONLY_KEY, SHOW_SELECTED_ONLY_KEY, SORT_MODE_KEY], (result) => {
+  safeStorageGet([FAST_MODE_KEY, SHOW_NON_EMPTY_ONLY_KEY, SHOW_SELECTED_ONLY_KEY, SORT_MODE_KEY, HIDE_NO_CONSUMERS_KEY], (result) => {
     if (result[FAST_MODE_KEY]) {
       fastModeEnabled = true;
       document.getElementById('fastModeBtn').classList.add('active');
@@ -373,8 +378,10 @@ function createSidebar() {
     showNonEmptyOnly = !!result[SHOW_NON_EMPTY_ONLY_KEY];
     showSelectedOnly = !!result[SHOW_SELECTED_ONLY_KEY];
     sortMode = result[SORT_MODE_KEY] === 'lag' ? 'lag' : 'messages';
+    hideNoConsumers = !!result[HIDE_NO_CONSUMERS_KEY];
     updateNonEmptyToggleUi();
     updateSortToggleUi();
+    updateHasConsumersToggleUi();
     if (showSelectedOnly) document.getElementById('selectedOnlyBtn').classList.add('active');
   });
 }
@@ -423,6 +430,28 @@ function updateSortToggleUi() {
   btn.title = lagMode
     ? 'Sorting by consumer lag (click to sort by messages)'
     : 'Sorting by messages (click to sort by lag)';
+}
+
+// Hides topics that have been confirmed to have zero consumer groups. Topics
+// whose consumers haven't been fetched yet are deliberately left visible
+// (unknown is not "no consumers") and marked so the user knows they're pending.
+function toggleHideNoConsumers() {
+  hideNoConsumers = !hideNoConsumers;
+  lagScanCursor = 0;
+  safeStorageSet({ [HIDE_NO_CONSUMERS_KEY]: hideNoConsumers });
+  updateHasConsumersToggleUi();
+  lastRenderedTopicsJson = null;
+  renderTopicsFromCache();
+  pollMetrics();
+}
+
+function updateHasConsumersToggleUi() {
+  const btn = document.getElementById('hasConsumersBtn');
+  if (!btn) return;
+  btn.classList.toggle('active', hideNoConsumers);
+  btn.title = hideNoConsumers
+    ? 'Hiding topics with no consumers (click to show all)'
+    : 'Show all topics (click to hide topics with no consumers)';
 }
 
 function updateNonEmptyToggleUi() {
@@ -506,7 +535,9 @@ async function pollMetrics() {
     const topics = await fetchTopics();
     if (topics) renderMetrics(topics);
     await refreshExpandedConsumers();
-    if (topics && sortMode === 'lag') await scanLagForVisibleTopics(visibleTopicsFor(topics));
+    if (topics && (sortMode === 'lag' || hideNoConsumers)) {
+      await scanConsumersForVisibleTopics(visibleTopicsFor(topics));
+    }
   } catch (e) {
     console.error('[Kafka Eye] Poll error:', e);
   }
@@ -626,10 +657,11 @@ function topicKnownLag(topicName) {
   return consumers.reduce((sum, c) => sum + parseLag(c.lag), 0);
 }
 
-// Backfill lag data for the visible topics, ONE per poll, so lag sorting has
-// something to sort by. Honours the same mutex/backoff as on-demand fetches.
-async function scanLagForVisibleTopics(visibleTopics) {
-  if (sortMode !== 'lag') return;
+// Backfill consumer data for the visible topics, ONE per poll, so lag sorting
+// and the no-consumer filter have something to work with. Honours the same
+// mutex/backoff as on-demand fetches.
+async function scanConsumersForVisibleTopics(visibleTopics) {
+  if (sortMode !== 'lag' && !hideNoConsumers) return;
   if (consumerFetchInFlight) return;
 
   const candidates = visibleTopics
@@ -844,6 +876,13 @@ function visibleTopicsFor(topics) {
   return topics.filter(t => {
     if (showSelectedOnly && !selectedTopics[t.name]) return false;
     if (showNonEmptyOnly && Number(t.messageCount || 0) <= 0) return false;
+    // Only hide topics we've actually confirmed have no consumer groups.
+    // Unfetched topics stay visible so the list doesn't silently drop topics
+    // the scan simply hasn't reached yet.
+    if (hideNoConsumers) {
+      const consumers = topicConsumers[t.name];
+      if (Array.isArray(consumers) && consumers.length === 0) return false;
+    }
     if (searchTerm && !t.name.toLowerCase().includes(searchTerm)) return false;
     return true;
   });
@@ -894,7 +933,8 @@ function renderTopics(topics) {
     })),
     selectedTopics,
     expandedTopics,
-    sortMode
+    sortMode,
+    hideNoConsumers
   });
   if (lastRenderedTopicsJson === stateKey) return;
   lastRenderedTopicsJson = stateKey;
@@ -922,7 +962,9 @@ function renderTopics(topics) {
     }
 
     // In lag mode surface the number the sort is based on, otherwise the
-    // ordering looks arbitrary. "scanning…" marks not-yet-fetched topics.
+    // ordering looks arbitrary. "scanning…" marks not-yet-fetched topics —
+    // also shown under the no-consumer filter to explain why a topic that may
+    // yet be filtered out is still on screen.
     let lagHtml = '';
     if (sortMode === 'lag') {
       const known = topicKnownLag(topic.name);
@@ -937,6 +979,9 @@ function renderTopics(topics) {
           : `Fully caught up — no outstanding lag across ${groupCount} consumer group${groupCount === 1 ? '' : 's'}.`;
         lagHtml = ` <span class="topic-lag" style="color:${lagColor};" title="${lagTip}">${fmtCompactCount(known)} lag</span>`;
       }
+    } else if (hideNoConsumers && !Array.isArray(topicConsumers[topic.name])) {
+      const pendTip = 'Consumer groups not fetched yet, so this topic can\'t be filtered out yet.\nKafka UI only exposes consumer groups per topic, so Kafka Eye scans one topic per poll.';
+      lagHtml = ` <span class="topic-lag-pending" title="${pendTip}">scanning…</span>`;
     }
 
     const msgTip = `${fmt(topic.messageCount)} total messages in this topic\n(sum of offsetMax across all partitions).`;
