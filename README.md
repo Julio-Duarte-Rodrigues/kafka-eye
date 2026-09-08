@@ -6,9 +6,12 @@
   <img src="docs/screenshot.png" alt="Kafka Eye sidebar showing topics sorted by consumer lag, with an expanded topic listing its consumer groups" width="380">
 </p>
 
-*The sidebar in lag-sort mode (⏳): topics ordered by outstanding consumer lag,
-with the top topic expanded to show its consumer groups, health badges and
-per-group lag. Topic and consumer names are illustrative.*
+<p align="center">
+  <em>Lag-sort mode (⏳): topics ordered by outstanding consumer lag, with the top
+  topic expanded to show its consumer groups. Names are illustrative.</em>
+  <br>
+  <strong>📸 <a href="docs/SNAPSHOTS.md">See more snapshots →</a></strong>
+</p>
 
 ## How it works
 
