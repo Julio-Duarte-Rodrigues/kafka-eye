@@ -1,5 +1,5 @@
 // Kafka Eye - Uses Kafka UI API
-// Version 1.5.4 - Show "caught up" instead of a stale "falling" trend at zero lag
+// Version 1.5.5 - Hide zero-lag topics and consumers
 
 const SELECTED_TOPICS_KEY_PREFIX = 'selectedTopics_';
 const SELECTED_CONSUMERS_KEY_PREFIX = 'selectedConsumers_';
@@ -24,7 +24,7 @@ let topicConsumers = {};      // { topicName: [ consumer, ... ] }
 let loadingConsumers = {};    // { topicName: true } — in-flight requests
 let sidebarMinimized = false;
 let sortMode = 'messages';    // 'messages' | 'lag'
-let hideNoConsumers = false;  // hide topics confirmed to have zero consumer groups
+let hideNoConsumers = false;  // hide topics/consumers with no active lag
 
 // Background consumer scan. Consumer groups are only known for topics that have
 // been fetched, and those are fetched on demand (one at a time, by design — see
@@ -338,7 +338,7 @@ function createSidebar() {
         <button class="icon-btn" id="fastModeBtn" title="Toggle fast mode">⚡</button>
         <button class="icon-btn" id="nonEmptyEyeBtn" title="Show non-empty only">🙈</button>
         <button class="icon-btn" id="selectedOnlyBtn" title="Show selected only">◉</button>
-        <button class="icon-btn" id="hasConsumersBtn" title="Show all topics (click to hide topics with no consumers)">👥</button>
+        <button class="icon-btn" id="hasConsumersBtn" title="Show all topics and consumers (click to hide zero-lag items)">👥</button>
         <button class="icon-btn" id="sortBtn" title="Sort by messages (click to sort by lag)">⇅</button>
         <button class="icon-btn" id="closeBtn" title="Close">✕</button>
       </div>
@@ -471,8 +471,8 @@ function updateHasConsumersToggleUi() {
   if (!btn) return;
   btn.classList.toggle('active', hideNoConsumers);
   btn.title = hideNoConsumers
-    ? 'Hiding topics with no consumers (click to show all)'
-    : 'Show all topics (click to hide topics with no consumers)';
+    ? 'Hiding topics and consumers with zero lag (click to show all)'
+    : 'Show all topics and consumers (click to hide zero-lag items)';
 }
 
 function updateNonEmptyToggleUi() {
@@ -951,12 +951,12 @@ function visibleTopicsFor(topics) {
   return topics.filter(t => {
     if (showSelectedOnly && !selectedTopics[t.name]) return false;
     if (showNonEmptyOnly && Number(t.messageCount || 0) <= 0) return false;
-    // Only hide topics we've actually confirmed have no consumer groups.
-    // Unfetched topics stay visible so the list doesn't silently drop topics
-    // the scan simply hasn't reached yet.
+    // Only hide topics whose consumer data has been fetched and confirms no
+    // active lag. Unfetched topics stay visible so the list doesn't silently
+    // drop topics the scan simply hasn't reached yet.
     if (hideNoConsumers) {
       const consumers = topicConsumers[t.name];
-      if (Array.isArray(consumers) && consumers.length === 0) return false;
+      if (Array.isArray(consumers) && topicKnownLag(t.name) <= 0) return false;
     }
     if (searchTerm && !t.name.toLowerCase().includes(searchTerm)) return false;
     return true;
@@ -1202,10 +1202,15 @@ function renderConsumerPanel(panel, topicName) {
     return;
   }
 
-  const filtered = consumers.filter(c => !searchTerm || c.name.toLowerCase().includes(searchTerm));
+  const filtered = consumers.filter(c => {
+    if (hideNoConsumers && parseLag(c.lag) <= 0) return false;
+    return !searchTerm || c.name.toLowerCase().includes(searchTerm);
+  });
 
   if (filtered.length === 0) {
-    panel.innerHTML = '<div class="consumers-empty">No consumers match search</div>';
+    panel.innerHTML = hideNoConsumers
+      ? '<div class="consumers-empty">No consumers with positive lag</div>'
+      : '<div class="consumers-empty">No consumers match search</div>';
     return;
   }
 
