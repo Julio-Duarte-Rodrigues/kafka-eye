@@ -1,5 +1,5 @@
 // Kafka Eye - Uses Kafka UI API
-// Version 1.5.6 - Only label near-zero, near-complete drains as stable
+// Version 1.5.7 - Keep expected fetch timeouts out of extension Errors
 
 const SELECTED_TOPICS_KEY_PREFIX = 'selectedTopics_';
 const SELECTED_CONSUMERS_KEY_PREFIX = 'selectedConsumers_';
@@ -612,13 +612,13 @@ async function fetchTopics() {
   } catch (e) {
     if (isContextError(e) || !isExtensionContextValid()) { handleInvalidatedContext(); return cachedTopics; }
     if (isNetworkFetchError(e)) {
-      warnThrottled('topics-fetch-network', '[Kafka Eye] Topics API unreachable (network/CORS). Retrying with backoff.');
+      infoThrottled('topics-fetch-network', '[Kafka Eye] Topics API unreachable (network/CORS). Retrying with backoff.');
     } else {
       console.error('[Kafka Eye] Topics fetch failed:', e);
     }
     // Keep showing last good data rather than blanking the whole sidebar
     if (cachedTopics && cachedTopics.length > 0) {
-      warnThrottled('topics-stale-cache', '[Kafka Eye] Serving stale topics cache after failure');
+      infoThrottled('topics-stale-cache', '[Kafka Eye] Serving stale topics cache after failure');
       return cachedTopics;
     }
     showError('topicsList', 'Failed to load topics: ' + e.message);
@@ -668,7 +668,7 @@ async function fetchConsumersForTopic(topicName, timeoutMs = CONSUMER_FETCH_TIME
       message: timedOut ? 'timed out' : (networkDown ? 'network unavailable' : e.message)
     };
     if (networkDown) {
-      warnThrottled(
+      infoThrottled(
         `consumers-fetch-network:${topicName}`,
         `[Kafka Eye] Consumers for ${topicName} unavailable (network/CORS) (${count}x, retry in ${Math.round(delay / 1000)}s).`
       );
@@ -676,7 +676,7 @@ async function fetchConsumersForTopic(topicName, timeoutMs = CONSUMER_FETCH_TIME
       // A slow consumer-groups endpoint is expected on some clusters and self-heals
       // via backoff, so only the first failure is a warning; the rest are debug
       // noise and would otherwise spam the console every backoff cycle.
-      const log = count === 1 ? console.warn : console.debug;
+      const log = count === 1 ? console.info : console.debug;
       log(`[Kafka Eye] Consumers for ${topicName} failed (${count}x, retry in ${Math.round(delay / 1000)}s):`, e.message);
     }
     return null; // null = failed (distinct from [] = genuinely no consumers)
@@ -1406,12 +1406,12 @@ function isNetworkFetchError(e) {
   return e?.name === 'TypeError' && msg.includes('Failed to fetch');
 }
 
-function warnThrottled(key, message, ...args) {
+function infoThrottled(key, message, ...args) {
   const now = Date.now();
   const lastAt = lastLogAtByKey[key] || 0;
   if (now - lastAt >= LOG_DEDUPE_WINDOW_MS) {
     lastLogAtByKey[key] = now;
-    console.warn(message, ...args);
+    console.info(message, ...args);
   } else {
     console.debug(message, ...args);
   }
