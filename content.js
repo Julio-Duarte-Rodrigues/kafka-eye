@@ -1,5 +1,5 @@
 // Kafka Eye - Uses Kafka UI API
-// Version 1.5.2 - Throttled network-failure logging; less console noise
+// Version 1.5.4 - Show "caught up" instead of a stale "falling" trend at zero lag
 
 const SELECTED_TOPICS_KEY_PREFIX = 'selectedTopics_';
 const SELECTED_CONSUMERS_KEY_PREFIX = 'selectedConsumers_';
@@ -793,8 +793,20 @@ function isTopicIdle(topicName) {
   return recent.every(s => s.v === recent[0].v);
 }
 
-// Lag trend for a consumer: rising / falling / stable
-function lagTrend(consumerName) {
+// Lag trend for a consumer: rising / falling / stable / caught-up
+//
+// The rate is a least-squares slope over the last TREND_WINDOW samples, so it
+// reflects the *trajectory during that window* — not just the instant now.
+// If lag was draining from a backlog down to 0 partway through the window,
+// the slope stays negative for the rest of the window's lifetime even though
+// there's nothing left to drain. Reporting that as "falling" next to a
+// current value of "0 lag" reads as a contradiction, so once lag has
+// actually hit 0 we report "caught up" regardless of the historical slope —
+// lag can't go negative, so there's no further fall to describe.
+function lagTrend(consumerName, currentLag) {
+  if (currentLag !== undefined && parseLag(currentLag) <= 0) {
+    return { dir: 'caught-up', rate: 0, icon: '✓', color: '#22c55e' };
+  }
   const rate = ratePerSecond(consumerLagHistory, consumerName);
   if (rate === null) return null;
   if (Math.abs(rate) < 0.5) return { dir: 'stable', rate, icon: '—', color: '#0ea5e9' };
@@ -1207,11 +1219,13 @@ function renderConsumerPanel(panel, topicName) {
     let detailHtml = '';
     if (isSelected) {
       const samples = consumerLagHistory[c.name] || [];
-      const trend = lagTrend(c.name);
+      const trend = lagTrend(c.name, c.lag);
       const eta = etaToZero(c.name, c.lag);
       const parts = [];
       if (trend) {
-        if (trend.dir === 'stable') {
+        if (trend.dir === 'caught-up') {
+          parts.push(`<span style="color:${trend.color};" title="Lag is 0 right now. Any earlier decline in this window is history, not something still happening.">✓ caught up</span>`);
+        } else if (trend.dir === 'stable') {
           parts.push(`<span style="color:#fbbf24;">⚓ stable</span>`);
         } else {
           parts.push(`<span style="color:${trend.color};">${trend.icon} ${trend.dir}</span>`);

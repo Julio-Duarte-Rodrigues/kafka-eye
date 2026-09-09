@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Kafka Eye",
-  "version": "1.5.3",
+  "version": "1.5.4",
   "description": "Real-time Kafka monitoring for Kafka UI - uses official API",
   "permissions": ["storage", "scripting", "tabs"],
   "host_permissions": [
