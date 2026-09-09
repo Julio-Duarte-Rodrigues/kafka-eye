@@ -1,5 +1,5 @@
 // Kafka Eye - Uses Kafka UI API
-// Version 1.5.5 - Hide zero-lag topics and consumers
+// Version 1.5.6 - Only label near-zero, near-complete drains as stable
 
 const SELECTED_TOPICS_KEY_PREFIX = 'selectedTopics_';
 const SELECTED_CONSUMERS_KEY_PREFIX = 'selectedConsumers_';
@@ -42,6 +42,8 @@ let consumerLagHistory = {};  // { consumerName: [{ t, lag }] }
 const HISTORY_MAX = 30;
 const TREND_WINDOW = 20;  // samples used for BOTH the rate label and the sparkline
 const IDLE_POLLS_THRESHOLD = 3;
+const STABLE_LAG_MAX = 50;
+const STABLE_ETA_MAX_SECONDS = 10;
 
 // Consumer fetch resilience
 const CONSUMER_FETCH_TIMEOUT = 10000;
@@ -803,13 +805,29 @@ function isTopicIdle(topicName) {
 // current value of "0 lag" reads as a contradiction, so once lag has
 // actually hit 0 we report "caught up" regardless of the historical slope —
 // lag can't go negative, so there's no further fall to describe.
+//
+// A tiny negative slope is only called "stable" when the remaining backlog is
+// negligible and will clear almost immediately. Otherwise it is still
+// meaningfully falling, even if the rate is below the display threshold:
+// a 17,998-message backlog draining at 0.02/s is not stable — its ETA is
+// roughly ten days.
 function lagTrend(consumerName, currentLag) {
   if (currentLag !== undefined && parseLag(currentLag) <= 0) {
     return { dir: 'caught-up', rate: 0, icon: '✓', color: '#22c55e' };
   }
   const rate = ratePerSecond(consumerLagHistory, consumerName);
   if (rate === null) return null;
-  if (Math.abs(rate) < 0.5) return { dir: 'stable', rate, icon: '—', color: '#0ea5e9' };
+  const lag = currentLag === undefined ? null : parseLag(currentLag);
+  const eta = rate < -0.01 && lag !== null ? lag / Math.abs(rate) : null;
+  if (
+    Math.abs(rate) < 0.5 &&
+    lag !== null &&
+    lag < STABLE_LAG_MAX &&
+    eta !== null &&
+    eta < STABLE_ETA_MAX_SECONDS
+  ) {
+    return { dir: 'stable', rate, icon: '—', color: '#0ea5e9' };
+  }
   if (rate > 0) return { dir: 'rising', rate, icon: '▲', color: '#ef4444' };
   return { dir: 'falling', rate, icon: '▼', color: '#22c55e' };
 }
