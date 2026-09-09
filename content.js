@@ -76,7 +76,7 @@ let initStarted = false;
 // ── Init ──────────────────────────────────────────────────────────────────────
 
 // Global safety net: catch any context-invalidation error that escapes a guard
-// (e.g. thrown asynchronously from a chrome.* callback) and shut down quietly.
+// (e.g. thrown asynchronously from a chrome.* callback) and recover quietly.
 window.addEventListener('error', (evt) => {
   if (isContextError(evt.error || evt.message)) {
     handleInvalidatedContext();
@@ -1387,26 +1387,14 @@ function handleInvalidatedContext() {
   // Clear the liveness flag so the service worker knows this world is dead and
   // re-injects a fresh script instead of assuming one is already running.
   try { window.__kafkaEyeAlive = false; } catch (e) { /* ignore */ }
-  // This is expected during extension reload and should not look like a failure.
-  console.info('[Kafka Eye] Extension context invalidated — shutting down old script. New script will auto-recover.');
-
   if (pollingInterval) { clearInterval(pollingInterval); pollingInterval = null; }
   if (urlWatchInterval) { clearInterval(urlWatchInterval); urlWatchInterval = null; }
   clearTimeout(pollMetricsTimeout);
 
-  const banner = document.getElementById('kafkaEyeStaleBanner');
-  if (!banner) {
-    const header = document.querySelector('.sidebar-header');
-    if (header) {
-      const el = document.createElement('div');
-      el.id = 'kafkaEyeStaleBanner';
-      el.className = 'stale-banner';
-      el.title = 'Click to reload the page and reconnect';
-      el.textContent = '⚠ Extension reloaded — click to refresh';
-      el.addEventListener('click', () => window.location.reload());
-      header.appendChild(el);
-    }
-  }
+  // The old content script cannot be revived after an extension reload.
+  // Reloading the page is the only reliable way to install a fresh script,
+  // and avoids leaving a stale error entry in the browser's extension errors.
+  setTimeout(() => window.location.reload(), 0);
 }
 
 function safeStorageGet(keys, callback) {
